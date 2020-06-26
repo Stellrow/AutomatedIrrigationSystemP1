@@ -1,0 +1,292 @@
+
+#include <ArduinoJson.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+
+#define SensorUmiditate A0
+//Stare pompa
+bool isActive = false;
+bool isActiveOnline = false;
+//Programare in timp
+unsigned long ultimuTimp = 0;
+bool seUda = false;
+//8 ore
+int timpDeAsteptat = 8; //In ore
+long timpDeAsteptatTradus = 0; //Va tine valoare orelor in milisecunde
+unsigned long timpCurent;
+//Connectare la WiFi
+const char* ssid = "HUAWEI";
+const char* password = "123@56789";
+
+
+long presiune;
+//Nr pin pentru electrovalva
+int pinValva = 12;
+bool MAuto = true;
+int value = HIGH;
+
+
+
+///Stare vreme romania.api
+String judet;
+//Ziua curenta
+String data1;
+double tempMin1;
+double tempMax1;
+String descFenomen1;
+int fenomenSimbol1;
+//
+//Ziua viitoare
+String data2;
+double tempMin2;
+double tempMax2;
+String descFenomen2;
+int fenomenSimbol2;
+//
+//Ziua 3
+String data3;
+double tempMin3;
+double tempMax3;
+String descFenomen3;
+int fenomenSimbol3;
+
+
+//Creare server pe port 1133 si un al doilea client pentru a accesa vremea
+ WiFiServer server(1133);
+ WiFiClient client2;
+void setup() {
+  Serial.begin(115200);
+  delay(10);
+  pinMode(pinValva, OUTPUT);
+  digitalWrite(pinValva, HIGH);
+ 
+  Serial.println();
+  Serial.println();
+  Serial.print("Se conecteaza ");
+  Serial.println(ssid);
+ 
+  WiFi.begin(ssid, password);
+ 
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
+ 
+  // Start the server
+  server.begin();
+  Serial.println("Serverul a pornit");
+ 
+  // Print the IP address
+  Serial.print("Foloseste acest site pentru a intra: ");
+  Serial.print("http://");
+  Serial.print(WiFi.localIP());
+  Serial.println(":1133");
+  acceseazaVreme();
+ 
+}
+void turnOn(int targetPin){
+  if(isActive||isActiveOnline){
+    return;
+  }
+  isActive = true;
+  isActiveOnline = true;
+  digitalWrite(targetPin,LOW);
+  delay(30);
+  digitalWrite(targetPin,HIGH);
+}
+
+void turnOff(int targetPin){
+if(!isActive||!isActiveOnline){
+  return;
+}
+isActive=false;
+isActiveOnline=false;
+digitalWrite(targetPin,LOW);
+delay(30);
+digitalWrite(targetPin,HIGH);
+}
+
+void loop() {
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+ 
+  Serial.println("new client");
+  while(!client.available()){
+    delay(1);
+  }
+ 
+  String request = client.readStringUntil('\r');
+  Serial.println(request);
+  client.flush();
+
+ //Mod manual/auto
+ 
+ if(request.indexOf("/MODE=AUTO") != -1){
+  MAuto = true;  //Mod automatic
+ }
+ if(request.indexOf("/MODE=MANUAL") != -1){
+  MAuto = false; //Mod manual
+ }
+ //Control electrovalva
+ 
+  
+  if (request.indexOf("/EVALVA=ON") != -1)  {
+    //Deschide electrovalva
+    turnOn(pinValva);
+    value = LOW;
+  }
+  if (request.indexOf("/EVALVA=OFF") != -1)  {
+    //Inchide electrovalva
+    turnOff(pinValva);
+    value = HIGH;
+  }
+  //Ore mod manual
+  if(request.indexOf("/ORA=2") != -1){
+    timpDeAsteptat = 2;
+  }
+  if(request.indexOf("/ORA=4") != -1){
+    timpDeAsteptat =4;
+  }
+  if(request.indexOf("/ORA=6") != -1){
+    timpDeAsteptat = 6;
+  }
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/html");
+  client.println("");
+  client.println("<!DOCTYPE HTML>");
+  client.println("<html>");
+  client.println("<body style=background-color:#F0F8FF>");
+ 
+  client.print("Electrovalva este: ");
+  if(value == LOW){
+    client.print("Pornita");
+  }else{
+    client.print("Oprita");
+  }
+  client.println("<br>");
+  client.print("Instalatia este in mod: ");
+  if(MAuto == true){
+    client.print("Automatic");
+  }else{
+    client.print("Manual");
+    }
+  client.println("<p>Umiditate sol: "+ String(verificaUmiditate()) + "%" + "</p>");
+  client.println("<br>");
+  client.println("<p>Prognoza meteo</p>");
+  client.println("<p>Judetul: " + judet + "</p>");
+  client.println("<p>Astazi: </p>");
+  client.println("  Temperatura minima: " + String(tempMin1));
+  client.println("  Temperatura maxima: " + String(tempMax1));
+  client.println("  Stare vreme: " + descFenomen1);
+    client.println("<img src="+returneazaLink(fenomenSimbol1)+">");
+  client.println("<br>");
+  client.println("<p>Maine: </p>");
+  client.println("  Temperatura minima: " + String(tempMin2));
+  client.println("  Temperatura maxima: " + String(tempMax2));
+  client.println("  Stare vreme: " + descFenomen2);
+  client.println("<br>");
+  client.println("<p>Poimaine: </p>");
+  client.println("  Temperatura minima: " + String(tempMin3));
+  client.println("  Temperatura maxima: " + String(tempMax3));
+  client.println("  Stare vreme: " + descFenomen3);
+  client.println("<br>");
+  client.println("Control electrovalva: ");
+  if(MAuto == true){
+    client.println("<br>");
+    client.println("Instalatia este in modul automatic!");
+  }else{
+  client.println("<br>");
+  client.println("<a href=\"/EVALVA=ON\"\"><button>Porneste</button></a>");
+  client.println("<a href=\"/EVALVA=OFF\"\"><button>Opreste</button></a><br/>");
+  }
+  client.println("<br>");
+  client.println("Control mod: ");
+  client.println("<br>");
+  client.println("<a href=\"/MODE=AUTO\"\"><button>Automatic</button></a>");
+  client.println("<a href=\"/MODE=MANUAL\"\"><button>Manual</button></a><br/>");
+  if(MAuto == false){
+  client.println("Control manual: ");
+  client.println("<br>");
+  client.println("<a href=\"/ORA=2\"\"><button>2H</button></a>");
+  client.println("<a href=\"/ORA=4\"\"><button>4H</button></a><br/>");
+  client.println("<a href=\"/ORA=6\"\"><button>6H</button></a>");
+  }
+  client.println("</body>");
+  client.println("</html>");
+ 
+  delay(1);
+  Serial.println("Client disonnected");
+  Serial.println("");
+}
+
+void acceseazaVreme(){
+  conecteazaVreme();
+}
+
+void conecteazaVreme(){
+  HTTPClient http;
+  http.begin("http://www.meteoromania.ro/wp-json/meteoapi/v2/prognoza-orase");
+  int httpCode = http.GET();
+  if(httpCode>0){
+    String payload = http.getString();
+    Serial.println("Sa copiat datele de la http!");
+    DynamicJsonBuffer jsonBuffer(1600);
+    JsonObject& root = jsonBuffer.parseObject(http.getString());
+  Serial.println("Se stocheaza datele!");
+  salveazaDatele(root);
+  }
+  http.end();
+  Serial.println("Toate datele au fost salvate!");
+}
+
+void salveazaDatele(JsonObject& object){
+  const char* judetc = object["tara"]["localitate"][1]["@attributes"]["nume"];
+  judet = String(judetc);
+
+  //Ziua actuala
+  tempMin1 = object["tara"]["localitate"][1]["prognoza"][0]["temp_min"];
+  tempMax1 = object["tara"]["localitate"][1]["prognoza"][0]["temp_max"];
+  fenomenSimbol1 = object["tara"]["localitate"][1]["prognoza"][0]["fenomen_simbol"];
+  
+  const char* df1 = object["tara"]["localitate"][1]["prognoza"][0]["fenomen_descriere"];
+  descFenomen1 = String(df1);
+  //Maine
+  tempMin2 = object["tara"]["localitate"][1]["prognoza"][1]["temp_min"];
+  tempMax2 = object["tara"]["localitate"][1]["prognoza"][1]["temp_max"];
+  fenomenSimbol2 = object["tara"]["localitate"][1]["prognoza"][1]["fenomen_simbol"];
+  
+  const char* df2 = object["tara"]["localitate"][1]["prognoza"][1]["fenomen_descriere"];
+  descFenomen2 = String(df2);
+  //Poimaine
+  tempMin3 = object["tara"]["localitate"][1]["prognoza"][2]["temp_min"];
+  tempMax3 = object["tara"]["localitate"][1]["prognoza"][2]["temp_max"];
+  fenomenSimbol3 = object["tara"]["localitate"][1]["prognoza"][2]["fenomen_simbol"];
+  const char* df3 = object["tara"]["localitate"][1]["prognoza"][2]["fenomen_descriere"];
+  descFenomen3 = String(df3);
+  
+}
+
+int verificaUmiditate(){
+  float valoareSensor;
+  valoareSensor = analogRead(SensorUmiditate);
+  int procentaj;
+  int map_low = 378;
+  int map_high = 56;
+  procentaj = map(valoareSensor,map_low,map_high,0,100);
+  if(procentaj <= 0){
+    procentaj = 0;
+  }
+  if(procentaj >= 100){
+    procentaj = 100;
+  }
+  
+  return procentaj;
+}
+
+String returneazaLink(int simbol){
+return "'http://www.meteoromania.ro/wp-content/plugins/meteo/img/icons/"+String(simbol)+".svg'";
+}
